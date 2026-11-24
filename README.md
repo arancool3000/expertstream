@@ -1,14 +1,40 @@
-# 🚀 A 26B MODEL IN UNDER 5 GB OF RAM. ZERO SWAP. ON A LAPTOP. 🚀
+# ⚡ 26B MODEL, 26 TOK/S, UNDER 10 GB OF RAM, ON A LAPTOP. ⚡
 
-**ExpertStream** runs Gemma 4 26B-A4B (4-bit MLX, ~15.6 GB of weights) on a 24 GB MacBook while the process uses **~4.7 GB of RAM**, **adds no swap**, and **writes nothing to the SSD**.
+**ExpertStream** runs big mixture-of-experts models (Gemma 4 26B, Qwen 3.5 35B, gpt-oss 20B) on a 24 GB MacBook
+with a **fraction of the RAM**, **no swap**, and **no SSD writes**.
 
-| | Stock (LM Studio / mlx-lm) | ExpertStream |
+## New: the zero-copy expert arena (2.4x faster)
+
+The old streaming engine stopped the GPU **30-40 times per word**: the GPU picks experts, the CPU fetches them, the GPU continues.
+
+On Apple Silicon the CPU and GPU share one memory. So `arena.py` gives each layer a block of **expert slots that live in GPU memory**,
+and the SSD reads experts **straight into those slots** (`os.preadv` into a numpy view of an MLX array, no copies).
+The GPU looks up which slot holds each routed expert **itself**, so a whole word is **one uninterrupted GPU job**.
+An expert that isn't in a slot yet is left out of that word (weights renormalised) and loaded before the next.
+
+| Gemma 4 26B (4-bit), M5 MacBook 24 GB | old streaming | arena |
 |---|---|---|
-| RAM while running | ~16 GB + 8–10 GB swap | **4.7 GB** |
-| SSD writes | GBs of swap | **0** |
-| Prompt reading | fast | ~185 tok/s |
-| Writing | fast | ~9–10 tok/s (M5, 24 GB) |
-| Next-token agreement with full model | 100% | ~98% |
+| Speed (standalone) | ~10-12 tok/s | **26.5 tok/s** |
+| Speed (real chat app, words/s) | ~7 | **~16-23** |
+| Next-token agreement with the full model | 98% | 98% |
+| RAM | ~4.4-11 GB | 8-9 GB |
+
+## What we measured that did NOT help (so you don't have to try)
+
+- **Storing each expert contiguously** on disk: scattered reads already hit **5.6 GB/s**; contiguous was 0.8x.
+  Once the cache is big, the SSD is not the bottleneck; the per-layer CPU<->GPU stop is.
+- **Bigger expert cache alone**: 4x the cache gave no speed-up for Gemma (the stops dominate).
+- **Speculative / prompt-lookup decoding**: verifying 8 guessed tokens costs **~14x one token** on a streamed MoE
+  (each extra token pulls different experts). A small draft model made it 2.6x *slower*.
+- **Low-rank "ghost" experts** for cache misses: experts are near full-rank (rank 256 keeps only 79%). Useless.
+- `mx.compile` of the per-expert maths: +3%.
+
+## Still works
+
+- Cache-aware routing: skip a not-in-RAM expert with a small routing share (top 2 always kept).
+- Expert-by-expert prompt reading in big chunks (each expert read once per chunk).
+- Adaptive RAM: the expert cache follows a live budget file, so "macOS + model" can stay under a fixed total.
+- `serve.py`: OpenAI-compatible server; set `ES_ARENA=1` for the arena (Gemma-style experts).
 
 ## How it works
 
