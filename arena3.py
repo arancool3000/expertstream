@@ -127,7 +127,8 @@ class Arena:
         stage = bg and os.environ.get("ES_A3_ALIGN", "1") == "1"
         if stage:                                             # page-aligned direct reads disturb the GPU about half as much
             import mmap
-            PG = 16384; mm = mmap.mmap(-1, 1 << 20); mv = memoryview(mm); scr = np.frombuffer(mm, np.uint8)
+            PG = 16384; big = max(st for jl in self.jobs.values() for g in jl for (_, _, st, _) in g)
+            mm = mmap.mmap(-1, max(1 << 20, -(-(big + 2 * PG) // PG) * PG)); mv = memoryview(mm); scr = np.frombuffer(mm, np.uint8)   # fits the biggest expert part
         while True:
             grp, e, s, pend = q.get()
             try:
@@ -257,12 +258,15 @@ class ArenaExperts(nn.Module):
         self._L, self._a, self._st = L, arena, streamed
         self._bits = {p: arena.s.bits[(L, p)] for p in PROJ}
         self._g = {p: tuple(arena.gbuf[(L, p, q)] for q in ("weight", "scales", "biases")) for p in PROJ}
+        self._b = {p: arena.gbuf.get((L, p, "bias")) for p in PROJ}          # gpt-oss: per-expert output bias
         self._gates = gates
 
     def _mlp(self, x, si):
         def lin(h, p):
             bits, gs = self._bits[p]; W, sc, bi = self._g[p]
-            return mx.gather_qmm(h, W, sc, bi, rhs_indices=si, transpose=True, group_size=gs, bits=bits)
+            y = mx.gather_qmm(h, W, sc, bi, rhs_indices=si, transpose=True, group_size=gs, bits=bits)
+            B = self._b[p]
+            return y if B is None else y + mx.expand_dims(B[si], -2)
         h = mx.expand_dims(x, (-2, -3))
         return lin(self._st._act(lin(h, "up_proj"), lin(h, "gate_proj")), "down_proj").squeeze(-2)
 
@@ -306,8 +310,7 @@ def arena_model(model, budget_mb, model_dir=None, prompt_cache_mb=300, **kw):
         elif isinstance(getattr(getattr(l, "mlp", None), "experts", None), SP.StreamedExperts): holders[i] = l.mlp
     moe = sorted(holders)
     if not moe: raise RuntimeError("arena: no streamed experts found")
-    if any("bias" in store.parts[(moe[0], p)] for p in PROJ): raise RuntimeError("arena: experts with bias (gpt-oss) not supported yet")
-    gates = {i: getattr(holders[i], "gate", None) for i in moe}          # Qwen routers; (Gemma: no guessing)
+    gates = {i: getattr(holders[i], "gate", None) or getattr(holders[i], "router", None) for i in moe}   # Qwen gate / gpt-oss router          # Qwen routers; (Gemma: no guessing)
     gates = {i: g for i, g in gates.items() if g is not None}
     ar = Arena(store, moe, budget_mb, **kw); ar.rec = []
     if os.environ.get("ES_A3_BOOST", "1") == "1": boost_process()

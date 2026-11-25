@@ -1,7 +1,26 @@
-# ⚡ 26B MODEL, 26 TOK/S, UNDER 10 GB OF RAM, ON A LAPTOP. AND NOW A 35B MOE AT 2X, ZERO ACCURACY LOST. ⚡
+# ⚡ A 120B MODEL IN 11 GB OF RAM ON A 24 GB LAPTOP, EXACT OUTPUT. 35B MOE AT 22 TOK/S. ⚡
 
 **ExpertStream** runs big mixture-of-experts models (Gemma 4 26B, Qwen 3.5 35B, gpt-oss 20B) on a 24 GB MacBook
 with a **fraction of the RAM**, **no swap**, and **no SSD writes**.
+
+## New: arena3 now runs every MoE model exactly, including gpt-oss 120B
+
+arena3 now supports experts with bias terms (gpt-oss), so all of these run on one engine. Measured on a 24 GB MacBook (Apple M5), teacher-forced token agreement against the unmodified model, 2 prompts x 200 tokens:
+
+| Model | RAM (peak) | Agreement | Speed |
+|---|---|---|---|
+| gpt-oss 120B (3-bit, 51 GB on disk) | 11.3 GB | identical (exact mode) | 6.5-8.6 tok/s |
+| Gemma 4 26B (4-bit) | 7.7 GB | 397/400 (99.3%) | 11 tok/s (Low Power Mode) |
+| gpt-oss 20B | 7.0 GB | 400/400 | 14 tok/s (Low Power Mode) |
+| Qwen 3.5 35B-A3B | ~10 GB | 160/160 | 22 tok/s |
+
+**A 120B-parameter model in 11 GB of RAM, with exact output, on a laptop.**
+
+### Lesson: never silently drop experts
+The first arena skipped any expert that wasn't already loaded. On Gemma 4 26B that matched the real model only **92.5%** of the time, about one wrong token in 13, and in real chats it showed up as stutters and broken words ("the the", "nons-ensical"). arena3 always waits for important experts and only skips ones with a routing weight under 3% (`ES_A3_TAU=0.03`); that is what brings agreement to 99-100%.
+
+### What limits gpt-oss 120B
+Its experts are ~10 MB each and ~57 are missing per token, so each token waits ~100 ms for the SSD at its full ~5.6 GB/s. Guessing the next layer's experts and reading them early made it **slower** (wrong guesses waste the same bandwidth). Skipping experts above a 3% weight broke the output (loops). It is bandwidth-bound, honestly.
 
 ## New: arena3, the MoE model is 2x faster at the same accuracy
 
