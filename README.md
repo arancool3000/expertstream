@@ -1,7 +1,31 @@
-# ⚡ 26B MODEL, 26 TOK/S, UNDER 10 GB OF RAM, ON A LAPTOP. ⚡
+# ⚡ 26B MODEL, 26 TOK/S, UNDER 10 GB OF RAM, ON A LAPTOP. AND NOW A 35B MOE AT 2X, ZERO ACCURACY LOST. ⚡
 
 **ExpertStream** runs big mixture-of-experts models (Gemma 4 26B, Qwen 3.5 35B, gpt-oss 20B) on a 24 GB MacBook
 with a **fraction of the RAM**, **no swap**, and **no SSD writes**.
+
+## New: arena3, the MoE model is 2x faster at the same accuracy
+
+Qwen 3.5 35B-A3B, with its experts streamed from the SSD and RAM capped at 10 GB, on a MacBook:
+
+| Engine | tok/s | Agreement with the full model | Peak RAM |
+|---|---|---|---|
+| Streamed engine | 10.6-11.0 | 159/160 | 9.2 GB |
+| **arena3** | **20.7-22.4** | **160/160** | 10.0 GB |
+
+Agreement is teacher-forced over 160 tokens. Swap did not grow.
+
+How it works (`arena3.py`):
+- **One short GPU stop per layer** to learn the routed experts. It costs little: with every expert present it still runs at 41 tok/s.
+- **Experts already in the arena** run in place as 3 `gather_qmm` kernels instead of 24 small ones.
+- **Missing experts with real weight** are read from the SSD straight into a GPU slot, 9 tensor parts in parallel (0.46 ms each), and the engine waits for them.
+- **Only low-weight misses are skipped** (share < 0.15, at most 25% of a layer). They are loaded the second time they are wanted. A high-weight expert is never dropped.
+
+Knobs: `ES_A3_TAU`, `ES_A3_BG`, `ES_A3_MAXDROP`. Usage: `arena3.arena_model(model, 7600, model_dir)`.
+
+Tried and dropped:
+- **A fused Metal kernel for all 8 experts:** only 1.5-1.8x at full accuracy; the kernel was never the bottleneck.
+- **Background or look-ahead installs:** 75% of the next layer's experts guessed right, but the speed stalls for seconds at a time.
+- **Smarter slot replacement** (frequency plus recency): about 0.5 points fewer misses than LRU.
 
 ## New: the zero-copy expert arena (2.4x faster)
 
